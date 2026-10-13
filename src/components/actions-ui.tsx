@@ -176,21 +176,15 @@ export function BasisToggle({ projectId, basis }: { projectId: string; basis: "r
   );
 }
 
-export function TermsEditor({ projectId, members, initial, proposedId, canApprove, waitingNames, locked }: {
-  projectId: string; members: { id: string; name: string }[]; initial: Record<string, { e: number; p: number }>;
+export function TermsEditor({ projectId, members, proposedId, canApprove, waitingNames, locked }: {
+  projectId: string; members: { id: string; name: string }[];
   proposedId?: string; canApprove: boolean; waitingNames: string; locked: boolean;
 }) {
   const t = useT();
   const equal = (n: number) => members.map((_, i) => Math.floor(10000 / n) + (i < 10000 % n ? 1 : 0));
   const eq = equal(members.length);
-  const [vals, setVals] = useState<Record<string, { e: string; p: string }>>(() =>
-    Object.fromEntries(members.map((m, i) => [m.id, { e: String((initial[m.id]?.e ?? eq[i]!) / 100), p: String((initial[m.id]?.p ?? eq[i]!) / 100) }])));
   const { busy, error, run } = useRun();
-  const toBps = (s: string) => Math.round(Number(s) * 100);
-  const total = (k: "e" | "p") => members.reduce((a, m) => a + (Number.isFinite(Number(vals[m.id]![k])) ? toBps(vals[m.id]![k]) : 0), 0);
-  const ok = total("e") === 10000 && total("p") === 10000 && members.every((m) => ["e", "p"].every((k) => Number(vals[m.id]![k as "e" | "p"]) >= 0));
-  const set = (id: string, k: "e" | "p", v: string) => setVals((p) => ({ ...p, [id]: { ...p[id]!, [k]: v } }));
-  const fmt = (n: number) => String(n / 100);
+  const ok = members.length > 0;
   return (
     <div className="space-y-4">
       {proposedId && canApprove && !locked && (
@@ -204,28 +198,11 @@ export function TermsEditor({ projectId, members, initial, proposedId, canApprov
         <div className="card space-y-3">
           <p className="font-bold">{t("terms.change")}</p>
           <p className="hint">{t("terms.changeNote")}</p>
-          <div className="space-y-4">
-            {members.map((m) => (
-              <div key={m.id} className="rounded-xl border border-rule p-3">
-                <p className="mb-2 font-bold">{m.name}</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="label text-sm" htmlFor={`e-${m.id}`}>{t("terms.expenseShare")} %</label>
-                    <input id={`e-${m.id}`} inputMode="decimal" className="input" value={vals[m.id]!.e} onChange={(e) => set(m.id, "e", e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="label text-sm" htmlFor={`p-${m.id}`}>{t("terms.profitShare")} %</label>
-                    <input id={`p-${m.id}`} inputMode="decimal" className="input" value={vals[m.id]!.p} onChange={(e) => set(m.id, "p", e.target.value)} />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <button type="button" className="btn btn-quiet w-full" onClick={() => setVals(Object.fromEntries(members.map((m, i) => [m.id, { e: fmt(eq[i]!), p: fmt(eq[i]!) }])))}>{t("terms.equal")}</button>
-          {!ok && <p role="alert" className="field-error">{t("terms.mustBe100", { total: `${fmt(total("e"))} / ${fmt(total("p"))}` })}</p>}
+          <p>{t("terms.fixedRule")}</p>
+          <ul className="list-disc pl-5">{members.map((m) => <li key={m.id}>{m.name}</li>)}</ul>
           {error && <p role="alert" className="field-error">{t(error)}</p>}
           <button type="button" className="btn btn-primary w-full" disabled={!ok || busy}
-            onClick={() => run(() => proposeAgreement(projectId, members.map((m) => ({ member_id: m.id, expense_bps: toBps(vals[m.id]!.e), profit_bps: toBps(vals[m.id]!.p) }))))}>
+            onClick={() => run(() => proposeAgreement(projectId, members.map((m, i) => ({ member_id: m.id, expense_bps: eq[i]!, profit_bps: eq[i]! }))))}>
             {busy ? t("common.saving") : t("terms.propose")}
           </button>
         </div>

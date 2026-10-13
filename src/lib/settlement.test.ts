@@ -10,12 +10,12 @@ const C = "c";
 function base(overrides: Partial<SettlementInput> = {}): SettlementInput {
   return {
     members: [
-      { memberId: A, name: "A", expenseBps: 5000, profitBps: 5000 },
-      { memberId: B, name: "B", expenseBps: 5000, profitBps: 5000 },
+      { memberId: A, name: "A", expenseBps: 5000, profitBps: 5000, partyRole: "landowner" },
+      { memberId: B, name: "B", expenseBps: 5000, profitBps: 5000, partyRole: "farmer" },
     ],
     expenses: [
-      { id: "e1", paidBy: A, amountPaise: R(49380), status: "confirmed" },
-      { id: "e2", paidBy: B, amountPaise: R(18300), status: "confirmed" },
+      { id: "e1", paidBy: A, amountPaise: R(49380), status: "confirmed", expenseFor: "landowner" },
+      { id: "e2", paidBy: B, amountPaise: R(18300), status: "confirmed", expenseFor: "farmer" },
     ],
     incomes: [{ id: "i1", kind: "crop_sale", amountPaise: R(273310), paymentStatus: "received", receivedBy: A, status: "active" }],
     payments: [],
@@ -35,20 +35,33 @@ describe("illustrative example from the product brief", () => {
     expect(r.netPaise).toBe(R(205630));
   });
   it("expense share and contribution difference", () => {
-    expect(find(r, A).expenseSharePaise).toBe(R(33840));
-    expect(find(r, A).contributionDiffPaise).toBe(R(15540));
-    expect(find(r, B).contributionDiffPaise).toBe(-R(15540));
+    expect(r.parties.map((p) => p.expensesPaise)).toEqual([R(49380), R(18300)]);
+    expect(r.parties.map((p) => p.expenseSharePaise)).toEqual([R(33840), R(33840)]);
+    expect(r.parties.map((p) => p.contributionDiffPaise)).toEqual([R(15540), -R(15540)]);
   });
   it("final distribution reimburses expenses once and splits profit", () => {
-    expect(find(r, A).profitSharePaise).toBe(R(102815));
-    expect(find(r, A).distributionPaise).toBe(R(152195));
-    expect(find(r, B).distributionPaise).toBe(R(121115));
-    expect(find(r, A).distributionPaise + find(r, B).distributionPaise).toBe(R(273310));
+    expect(r.parties.map((p) => p.profitSharePaise)).toEqual([R(102815), R(102815)]);
+    expect(r.parties.map((p) => p.distributionPaise)).toEqual([R(152195), R(121115)]);
+    expect(r.parties.reduce((total, p) => total + p.distributionPaise, 0)).toBe(R(273310));
     expect(r.reconciles).toBe(true);
     expect(r.provisional).toBe(false);
   });
   it("A holds all cash, so A pays B the difference", () => {
-    expect(r.transfers).toEqual([{ fromMemberId: A, toMemberId: B, amountPaise: R(121115) }]);
+    expect(r.transfers).toEqual([{ fromParty: "landowner", toParty: "farmer", amountPaise: R(121115) }]);
+  });
+  it("settles a farmer share without requiring a farmer login", () => {
+    const r = computeSettlement(base({
+      members: [{ memberId: A, name: "Owner", expenseBps: 10000, profitBps: 10000, partyRole: "landowner" }],
+      expenses: [
+        { id: "owner-expense", paidBy: A, amountPaise: R(49380), status: "confirmed", expenseFor: "landowner" },
+        { id: "farmer-expense", paidBy: A, amountPaise: R(18300), status: "confirmed", expenseFor: "farmer" },
+      ],
+      incomes: [{ id: "income", kind: "crop_sale", amountPaise: R(273310), paymentStatus: "received", receivedBy: A, status: "active" }],
+    }));
+
+    expect(r.parties.map((p) => p.distributionPaise)).toEqual([R(152195), R(121115)]);
+    expect(r.transfers).toEqual([{ fromParty: "landowner", toParty: "farmer", amountPaise: R(121115) }]);
+    expect(r.reconciles).toBe(true);
   });
 });
 
@@ -78,8 +91,8 @@ describe("rounding", () => {
   });
 });
 
-describe("different expense and profit shares", () => {
-  it("uses profit shares for profit and expense shares only for the contribution difference", () => {
+describe("fixed landowner and farmer split", () => {
+  it("ignores member percentage settings for party expense and profit shares", () => {
     const r = computeSettlement(
       base({
         members: [
@@ -90,6 +103,8 @@ describe("different expense and profit shares", () => {
     );
     expect(find(r, A).expenseSharePaise).toBe(R(47376));
     expect(find(r, A).profitSharePaise).toBe(R(102815));
+    expect(r.parties.map((p) => p.expenseSharePaise)).toEqual([R(33840), R(33840)]);
+    expect(r.parties.map((p) => p.profitSharePaise)).toEqual([R(102815), R(102815)]);
     expect(r.reconciles).toBe(true);
   });
 });
@@ -176,7 +191,7 @@ describe("reversed records, payments and refunds", () => {
   });
   it("partner payments reduce what is still due", () => {
     const r = computeSettlement(base({ payments: [{ id: "p", fromMember: A, toMember: B, amountPaise: R(100000), status: "active" }] }));
-    expect(r.transfers).toEqual([{ fromMemberId: A, toMemberId: B, amountPaise: R(21115) }]);
+    expect(r.transfers).toEqual([{ fromParty: "landowner", toParty: "farmer", amountPaise: R(21115) }]);
   });
   it("adjustments can be negative (money returned)", () => {
     const r = computeSettlement(
@@ -207,7 +222,7 @@ describe("reversed records, payments and refunds", () => {
     expect(r.reconciles).toBe(true);
     expect(r.transfers.length).toBeLessThanOrEqual(2);
     expect(r.transfers.reduce((a, t) => a + t.amountPaise, 0)).toBe(
-      r.members.filter((m) => m.remainingPaise > 0).reduce((a, m) => a + m.remainingPaise, 0),
+      r.parties.filter((p) => p.remainingPaise > 0).reduce((a, p) => a + p.remainingPaise, 0),
     );
   });
 });

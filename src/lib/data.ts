@@ -86,8 +86,11 @@ export function buildSettlementInput(project: Project, members: Member[], ledger
       name: byId.get(s.member_id)?.display_name ?? "?",
       expenseBps: s.expense_bps,
       profitBps: s.profit_bps,
+      partyRole: byId.get(s.member_id)?.role === "farmer" ? "farmer" : "landowner",
     })),
-    expenses: ledger.expenses.map((e) => ({ id: e.id, paidBy: e.paid_by, amountPaise: Number(e.amount_paise), status: e.status })),
+    expenses: ledger.expenses.map((e) => ({
+      id: e.id, paidBy: e.paid_by, amountPaise: Number(e.amount_paise), status: e.status, expenseFor: e.expense_for,
+    })),
     incomes: ledger.incomes.map((i) => ({
       id: i.id, kind: i.kind, amountPaise: Number(i.amount_paise), paymentStatus: i.payment_status, receivedBy: i.received_by, status: i.status,
     })),

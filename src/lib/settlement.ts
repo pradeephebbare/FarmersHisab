@@ -2,15 +2,14 @@
  * FarmHisab settlement engine — the ONLY place financial totals are calculated.
  *
  * Model (documented assumptions, shown to users on the settlement screen):
- *  1. Every partner is first reimbursed for the expenses they actually paid.
- *  2. Net profit (income − expenses) is then split by the approved PROFIT shares.
- *     A loss is split by the same profit shares (negative profit share).
- *  3. Expense shares are used to show how much each partner paid above/below their
- *     agreed share. This is information, never extra profit.
- *  4. Final distribution = expenses paid + profit share. Distributions always add up
- *     to the total income counted (money is never created or lost).
- *  5. "Remaining due" compares each partner's distribution to the cash they already
- *     hold (income they received) and to payments already made between partners.
+ *  1. Expenses tagged for the landowner or farmer count toward that party's spending.
+ *  2. Total expenses are shared equally; the difference shows who spent above or below
+ *     that share.
+ *  3. Net profit (income − expenses), or a loss, is split equally between both parties.
+ *  4. Final distribution = tagged expenses + equal profit share. Distributions add up
+ *     to counted income exactly.
+ *  5. Remaining due compares each party's distribution with cash received by its
+ *     project members and payments already recorded between those members.
  *
  * All values are integer paise. Percentages are integer basis points (10000 = 100%).
  */
@@ -19,18 +18,21 @@ export type ExpenseStatus = "awaiting_review" | "confirmed" | "disputed" | "reso
 export type IncomeKind = "crop_sale" | "other_income" | "refund_received" | "adjustment";
 export type Basis = "received" | "recorded";
 export type ApprovalPolicy = "notify_only" | "require_confirmation";
+export type PartyRole = "landowner" | "farmer";
 
 export interface MemberTerms {
   memberId: string;
   name: string;
   expenseBps: number;
   profitBps: number;
+  partyRole?: PartyRole;
 }
 export interface ExpenseIn {
   id: string;
   paidBy: string;
   amountPaise: number;
   status: ExpenseStatus;
+  expenseFor?: PartyRole;
 }
 export interface IncomeIn {
   id: string;
@@ -83,9 +85,23 @@ export interface MemberResult {
   remainingPaise: number;
 }
 export interface Transfer {
-  fromMemberId: string;
-  toMemberId: string;
+  fromParty?: PartyRole;
+  toParty?: PartyRole;
+  fromMemberId?: string;
+  toMemberId?: string;
   amountPaise: number;
+}
+export interface PartyResult {
+  party: PartyRole;
+  expensesPaise: number;
+  expenseSharePaise: number;
+  contributionDiffPaise: number;
+  profitSharePaise: number;
+  distributionPaise: number;
+  cashHeldPaise: number;
+  paymentsMadePaise: number;
+  paymentsReceivedPaise: number;
+  remainingPaise: number;
 }
 export interface SettlementResult {
   basis: Basis;
@@ -97,6 +113,7 @@ export interface SettlementResult {
   pendingIncomePaise: number;
   receivedIncomePaise: number;
   unassignedCashPaise: number;
+  parties: PartyResult[];
   members: MemberResult[];
   transfers: Transfer[];
   transfersAvailable: boolean;
@@ -106,7 +123,7 @@ export interface SettlementResult {
   awaitingExpenseIds: string[];
   excludedReversedExpenses: number;
   excludedReversedIncomes: number;
-  /** Self-check: distributions add up to income and profit shares add up to net. */
+  /** Self-check: party distributions add up to income and equal profit shares add up to net. */
   reconciles: boolean;
 }
 
@@ -192,6 +209,14 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
   const profitShares = allocate(netPaise, members.map((m) => m.profitBps));
   const expenseShares = allocate(totalExpensesPaise, members.map((m) => m.expenseBps));
 
+  const partyForMember = new Map(members.map((m, idx) => [m.memberId, m.partyRole ?? (idx === 0 ? "landowner" : "farmer")]));
+  const roles: PartyRole[] = ["landowner", "farmer"];
+  const partyExpenses = roles.map((party) => sum(expenses
+    .filter((e) => (e.expenseFor ?? partyForMember.get(e.paidBy) ?? "landowner") === party)
+    .map((e) => e.amountPaise)));
+  const partyExpenseShares = allocate(totalExpensesPaise, [5000, 5000]);
+  const partyProfitShares = allocate(netPaise, [5000, 5000]);
+
   const assignedCash = new Map<string, number>();
   let unassignedCashPaise = 0;
   for (const i of received) {
@@ -223,19 +248,41 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     };
   });
 
-  const positionsTotal = sum(memberResults.map((m) => m.remainingPaise));
+  const parties: PartyResult[] = roles.map((party, idx) => {
+    const held = sum(received.filter((i) => i.receivedBy && partyForMember.get(i.receivedBy) === party).map((i) => i.amountPaise));
+    const made = sum(payments.filter((p) => partyForMember.get(p.fromMember) === party).map((p) => p.amountPaise));
+    const got = sum(payments.filter((p) => partyForMember.get(p.toMember) === party).map((p) => p.amountPaise));
+    const expensesPaid = partyExpenses[idx] as number;
+    const expenseShare = partyExpenseShares[idx] as number;
+    const profitShare = partyProfitShares[idx] as number;
+    const distribution = expensesPaid + profitShare;
+    return {
+      party,
+      expensesPaise: expensesPaid,
+      expenseSharePaise: expenseShare,
+      contributionDiffPaise: expensesPaid - expenseShare,
+      profitSharePaise: profitShare,
+      distributionPaise: distribution,
+      cashHeldPaise: held,
+      paymentsMadePaise: made,
+      paymentsReceivedPaise: got,
+      remainingPaise: distribution - (held + got - made),
+    };
+  });
+
+  const positionsTotal = sum(parties.map((p) => p.remainingPaise));
   const transfersAvailable = positionsTotal === 0;
   const transfers: Transfer[] = [];
   if (transfersAvailable) {
-    const debtors = memberResults.filter((m) => m.remainingPaise < 0).map((m) => ({ id: m.memberId, amt: -m.remainingPaise })).sort((a, b) => b.amt - a.amt);
-    const creditors = memberResults.filter((m) => m.remainingPaise > 0).map((m) => ({ id: m.memberId, amt: m.remainingPaise })).sort((a, b) => b.amt - a.amt);
+    const debtors: { id: PartyRole; amt: number }[] = parties.filter((p) => p.remainingPaise < 0).map((p) => ({ id: p.party, amt: -p.remainingPaise })).sort((a, b) => b.amt - a.amt);
+    const creditors: { id: PartyRole; amt: number }[] = parties.filter((p) => p.remainingPaise > 0).map((p) => ({ id: p.party, amt: p.remainingPaise })).sort((a, b) => b.amt - a.amt);
     let d = 0;
     let c = 0;
     while (d < debtors.length && c < creditors.length) {
-      const debtor = debtors[d] as { id: string; amt: number };
-      const creditor = creditors[c] as { id: string; amt: number };
+      const debtor = debtors[d] as { id: PartyRole; amt: number };
+      const creditor = creditors[c] as { id: PartyRole; amt: number };
       const pay = Math.min(debtor.amt, creditor.amt);
-      if (pay > 0) transfers.push({ fromMemberId: debtor.id, toMemberId: creditor.id, amountPaise: pay });
+      if (pay > 0) transfers.push({ fromParty: debtor.id, toParty: creditor.id, amountPaise: pay });
       debtor.amt -= pay;
       creditor.amt -= pay;
       if (debtor.amt === 0) d++;
@@ -262,6 +309,7 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     pendingIncomePaise,
     receivedIncomePaise,
     unassignedCashPaise,
+    parties,
     members: memberResults,
     transfers,
     transfersAvailable,
@@ -272,8 +320,8 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     excludedReversedExpenses: input.expenses.length - expenses.length,
     excludedReversedIncomes: input.incomes.length - incomes.length,
     reconciles:
-      sum(memberResults.map((m) => m.distributionPaise)) === totalIncomePaise &&
-      sum(profitShares) === netPaise &&
-      sum(memberResults.map((m) => m.expensesPaidPaise)) === totalExpensesPaise,
+      sum(parties.map((p) => p.distributionPaise)) === totalIncomePaise &&
+      sum(partyProfitShares) === netPaise &&
+      sum(partyExpenses) === totalExpensesPaise,
   };
 }
